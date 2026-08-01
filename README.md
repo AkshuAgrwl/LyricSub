@@ -2,6 +2,8 @@
 
 A lightweight, headless background extension for VLC Media Player that automatically fetches synchronized lyrics from LRCLIB and injects them as subtitles in real time.
 
+Uses **LRCLIB (https://lrclib.net/)**, a free and open source database for plain and synchronized song lyrics.
+
 ## Installation
 
 1. Download the `lyricsub.lua` file from this repository.

@@ -110,7 +110,7 @@ function seconds_to_srt_time(seconds)
     return string.format("%02d:%02d:%02d,%03d", h, m, s, ms)
 end
 
-function inject_subtitles(plain_lyrics, synced_lyrics, is_not_found)
+function inject_subtitles(plain_lyrics, synced_lyrics, fallback_msg)
     local item = nil
     if vlc.input then
         local s, i = pcall(function()
@@ -137,10 +137,11 @@ function inject_subtitles(plain_lyrics, synced_lyrics, is_not_found)
 
     local srt_content = ""
 
-    if is_not_found then
+    if fallback_msg then
+        local display_text = (type(fallback_msg) == "string") and fallback_msg or "Lyrics not found"
         srt_content = "1\r\n"
         srt_content = srt_content .. seconds_to_srt_time(2) .. " --> " .. seconds_to_srt_time(8) .. "\r\n"
-        srt_content = srt_content .. "Lyrics not found\r\n\r\n"
+        srt_content = srt_content .. display_text .. "\r\n\r\n"
     else
         if not plain_lyrics or plain_lyrics == "" then
             return
@@ -225,15 +226,14 @@ function url_encode(str)
 end
 
 function fetch_lrclib(title_x, artist_x)
-    local status, plain, synced = pcall(function()
+    local status, err_code, plain, synced = pcall(function()
         local url = "https://lrclib.net/api/get?track_name=" .. url_encode(title_x) .. "&artist_name=" ..
                         url_encode(artist_x)
         log_msg("DEBUG", "Request URL: " .. url)
 
         local s = vlc.stream(url)
         if not s then
-            log_msg("ERROR", "Failed to open network stream.")
-            return nil, nil
+            return "network", nil, nil
         end
 
         local data = ""
@@ -246,8 +246,7 @@ function fetch_lrclib(title_x, artist_x)
         end
 
         if data == "" or data:find("404 Not Found") then
-            log_msg("DEBUG", "API returned 404 or empty data.")
-            return nil, nil
+            return "not_found", nil, nil
         end
 
         data = string.gsub(data, '\\"', "'")
@@ -270,15 +269,14 @@ function fetch_lrclib(title_x, artist_x)
             pln = string.gsub(pln, "\\n", "\n")
         end
 
-        log_msg("DEBUG", "Parsed API Data - Synced: " .. tostring(syn ~= nil) .. ", Plain: " .. tostring(pln ~= nil))
-        return pln, syn
+        return nil, pln, syn
     end)
 
     if not status then
-        log_msg("ERROR", "Exception during LRCLIB fetch: " .. tostring(plain))
-        return nil, nil
+        log_msg("ERROR", "Exception during LRCLIB fetch: " .. tostring(err_code))
+        return "error", nil, nil
     end
-    return plain, synced
+    return err_code, plain, synced
 end
 
 function input_changed()
@@ -323,7 +321,7 @@ function update_lyrics()
     end
 
     if start_item_str == last_fetched_item then
-        log_msg("DEBUG", "Skipping fetch: Lyrics already loaded for this track.")
+        -- Silent exit to prevent VLC event double-firing clutter
         return true
     end
 
@@ -338,7 +336,7 @@ function update_lyrics()
 
     log_msg("INFO", "Fetching lyrics for: " .. songartist .. " - " .. songtitle)
 
-    local plain_lrc, synced_lrc = fetch_lrclib(songtitle, songartist)
+    local err_code, plain_lrc, synced_lrc = fetch_lrclib(songtitle, songartist)
 
     local post_item = nil
     if vlc.input then
@@ -355,13 +353,16 @@ function update_lyrics()
         return false
     end
 
-    if plain_lrc and plain_lrc ~= "" then
+    if err_code == "network" or err_code == "error" then
+        log_msg("ERROR", "Network error. Cannot reach LRCLIB.")
+        inject_subtitles(nil, nil, "Network connection error")
+    elseif err_code == "not_found" or not plain_lrc or plain_lrc == "" then
+        log_msg("INFO", "Lyrics not found on LRCLIB. Showing fallback.")
+        inject_subtitles(nil, nil, "Lyrics not found")
+    else
         log_msg("INFO", "Lyrics found successfully.")
         local formatted_plain = string.gsub(plain_lrc, "\n", "<br>")
         inject_subtitles(formatted_plain, synced_lrc, false)
-    else
-        log_msg("INFO", "Lyrics not found in LRCLIB. Showing fallback.")
-        inject_subtitles(nil, nil, true)
     end
 
     last_fetched_item = start_item_str

@@ -88,7 +88,7 @@ function activate()
             current_target_item = get_item_id(i)
         end
     end
-    update_lyrics()
+    playing_changed()
     return true
 end
 
@@ -233,19 +233,45 @@ function fetch_lrclib(title_x, artist_x)
 
         local s = vlc.stream(url)
         if not s then
+            log_msg("ERROR", "Failed to open network stream.")
             return "network", nil, nil
         end
 
+        log_msg("DEBUG", "Stream connection established. Reading payload...")
+
         local data = ""
         while true do
-            local chunk = s:read(65535)
+            local curr_item = nil
+            if vlc.input then
+                local success, i = pcall(function()
+                    return vlc.input.item()
+                end)
+                if success and i then
+                    curr_item = get_item_id(i)
+                end
+            end
+            if curr_item ~= current_target_item then
+                log_msg("WARN", "Track changed during download. Aborting stream read.")
+                return "aborted", nil, nil
+            end
+
+            local chunk = s:read(2048)
             if not chunk or chunk == "" then
                 break
             end
             data = data .. chunk
+
+            local open_braces = select(2, string.gsub(data, "{", ""))
+            local close_braces = select(2, string.gsub(data, "}", ""))
+
+            if open_braces > 0 and open_braces == close_braces then
+                log_msg("DEBUG", "Full JSON payload detected. Breaking Keep-Alive block.")
+                break
+            end
         end
 
-        if data == "" or data:find("404 Not Found") then
+        if data == "" or data:find("404 Not Found") or data:find('"statusCode":%s*404') then
+            log_msg("DEBUG", "API returned 404 or empty data.")
             return "not_found", nil, nil
         end
 
@@ -289,13 +315,30 @@ function input_changed()
             current_target_item = get_item_id(i)
         end
     end
-    update_lyrics()
-    collectgarbage()
     return true
 end
 
 function playing_changed()
+    local state = nil
+    if vlc.playlist then
+        local s, status = pcall(function()
+            return vlc.playlist.status()
+        end)
+        if s then
+            state = status
+        end
+    end
+
+    if state == "playing" then
+        update_lyrics()
+    end
+    return true
 end
+
+function status_changed()
+    return playing_changed()
+end
+
 function meta_changed()
 end
 
@@ -321,7 +364,6 @@ function update_lyrics()
     end
 
     if start_item_str == last_fetched_item then
-        -- Silent exit to prevent VLC event double-firing clutter
         return true
     end
 

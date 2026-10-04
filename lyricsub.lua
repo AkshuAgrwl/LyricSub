@@ -232,6 +232,23 @@ function playing_changed() end
 function meta_changed() end
 
 function update_lyrics()
+    local item = nil
+    if vlc.input then 
+        local s, i = pcall(function() return vlc.input.item() end)
+        if s and i then item = i end
+    end
+    if not item then return false end
+    
+    local start_item_str = get_item_id(item)
+    
+    if start_item_str ~= current_target_item then 
+        return false 
+    end
+
+    if start_item_str == last_fetched_item then
+        return true
+    end
+
     local songtitle = get_title()
     local songartist = get_artist()
     
@@ -240,12 +257,25 @@ function update_lyrics()
     end
     
     local plain_lrc, synced_lrc = fetch_lrclib(songtitle, songartist)
+    
+    local post_item = nil
+    if vlc.input then 
+        local s, i = pcall(function() return vlc.input.item() end)
+        if s and i then post_item = i end
+    end
+    
+    if get_item_id(post_item) ~= start_item_str then
+        return false 
+    end
+    
     if plain_lrc and plain_lrc ~= "" then
         local formatted_plain = string.gsub(plain_lrc, "\n", "<br>")
         inject_subtitles(formatted_plain, synced_lrc, false)
     else
         inject_subtitles(nil, nil, true)
     end
+    
+    last_fetched_item = start_item_str
     
     return true
 end

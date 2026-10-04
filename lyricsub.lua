@@ -165,8 +165,15 @@ function inject_subtitles(plain_lyrics, synced_lyrics, is_not_found)
         f:close()
         
         if vlc.input and vlc.input.add_subtitle then
-            pcall(function() vlc.input.add_subtitle(path, true) end)
+            local success, err = pcall(function() vlc.input.add_subtitle(path, true) end)
+            if success then
+                log_msg("INFO", "Injected subtitle successfully at: " .. path)
+            else
+                log_msg("ERROR", "Failed to inject subtitle: " .. tostring(err))
+            end
         end
+    else
+        log_msg("ERROR", "Could not write temp subtitle file to: " .. path)
     end
 end
 
@@ -182,8 +189,13 @@ end
 function fetch_lrclib(title_x, artist_x)
     local status, plain, synced = pcall(function()
         local url = "https://lrclib.net/api/get?track_name=" .. url_encode(title_x) .. "&artist_name=" .. url_encode(artist_x)
+        log_msg("DEBUG", "Request URL: " .. url)
+        
         local s = vlc.stream(url)
-        if not s then return nil, nil end
+        if not s then 
+            log_msg("ERROR", "Failed to open network stream.")
+            return nil, nil 
+        end
         
         local data = ""
         while true do
@@ -192,7 +204,10 @@ function fetch_lrclib(title_x, artist_x)
             data = data .. chunk
         end
         
-        if data == "" or data:find("404 Not Found") then return nil, nil end
+        if data == "" or data:find("404 Not Found") then 
+            log_msg("DEBUG", "API returned 404 or empty data.")
+            return nil, nil 
+        end
         
         data = string.gsub(data, '\\"', "'") 
         local syn = string.match(data, '"syncedLyrics"%s*:%s*"(.-)"')
@@ -210,10 +225,14 @@ function fetch_lrclib(title_x, artist_x)
             pln = string.gsub(pln, "\\n", "\n") 
         end
         
+        log_msg("DEBUG", "Parsed API Data - Synced: " .. tostring(syn ~= nil) .. ", Plain: " .. tostring(pln ~= nil))
         return pln, syn
     end)
     
-    if not status then return nil, nil end
+    if not status then 
+        log_msg("ERROR", "Exception during LRCLIB fetch: " .. tostring(plain))
+        return nil, nil 
+    end
     return plain, synced
 end
 
@@ -242,10 +261,12 @@ function update_lyrics()
     local start_item_str = get_item_id(item)
     
     if start_item_str ~= current_target_item then 
+        log_msg("WARN", "Aborted pre-fetch: item mismatch.")
         return false 
     end
 
     if start_item_str == last_fetched_item then
+        log_msg("DEBUG", "Skipping fetch: Lyrics already loaded for this track.")
         return true
     end
 
@@ -253,8 +274,11 @@ function update_lyrics()
     local songartist = get_artist()
     
     if not songtitle or songtitle == "" or not songartist or songartist == "" then
+        log_msg("WARN", "Missing metadata. Title: '" .. tostring(songtitle) .. "', Artist: '" .. tostring(songartist) .. "'")
         return false
     end
+    
+    log_msg("INFO", "Fetching lyrics for: " .. songartist .. " - " .. songtitle)
     
     local plain_lrc, synced_lrc = fetch_lrclib(songtitle, songartist)
     
@@ -265,13 +289,16 @@ function update_lyrics()
     end
     
     if get_item_id(post_item) ~= start_item_str then
+        log_msg("ERROR", "Injection aborted to prevent crash: Track changed during network download.")
         return false 
     end
     
     if plain_lrc and plain_lrc ~= "" then
+        log_msg("INFO", "Lyrics found successfully.")
         local formatted_plain = string.gsub(plain_lrc, "\n", "<br>")
         inject_subtitles(formatted_plain, synced_lrc, false)
     else
+        log_msg("INFO", "Lyrics not found in LRCLIB. Showing fallback.")
         inject_subtitles(nil, nil, true)
     end
     

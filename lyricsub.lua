@@ -3,16 +3,61 @@
 -- it under the terms of the GNU General Public License as published by
 -- the Free Software Foundation.
 
+local log_file_path = ""
+
 function descriptor()
     return {
         title = "LyricSub",
-        version = "1.0.0",
+        version = "1.1.0",
         author = "AkshuAgrwl",
         url = 'https://github.com/AkshuAgrwl/LyricSub',
         description = "A VLC Media Player extension that automatically fetches and injects synchronized lyrics via LRCLIB as subtitles.",
         shortdesc = "LyricSub",
         capabilities = { "input-listener", "meta-listener", "playing-listener" }
     }
+end
+
+function init_logger()
+    local config_dir = ""
+    if vlc.config and vlc.config.configdir then
+        local s, dir = pcall(vlc.config.configdir)
+        if s and dir then config_dir = dir end
+    end
+    
+    local platform = get_platform()
+    
+    if config_dir == "" then
+        if platform == "windows" then
+            config_dir = os.getenv("APPDATA") .. "\\vlc"
+        else
+            config_dir = os.getenv("HOME") .. "/.config/vlc"
+        end
+    end
+    
+    if platform == "windows" then
+        log_file_path = config_dir .. "\\lyricsub_debug.log"
+    else
+        log_file_path = config_dir .. "/lyricsub_debug.log"
+    end
+    
+    local f = io.open(log_file_path, "w")
+    if f then
+        local time_str = os.date("%Y-%m-%d %H:%M:%S")
+        f:write(string.format("[%s] [INFO] === LyricSub Activated ===\n", time_str))
+        f:write(string.format("[%s] [INFO] Platform: %s | Version: %s\n", time_str, platform, descriptor().version))
+        f:write(string.format("[%s] [INFO] Log location: %s\n", time_str, log_file_path))
+        f:close()
+    end
+end
+
+function log_msg(level, message)
+    if not log_file_path or log_file_path == "" then return end
+    local f = io.open(log_file_path, "a")
+    if f then
+        local time_str = os.date("%Y-%m-%d %H:%M:%S")
+        f:write(string.format("[%s] [%s] %s\n", time_str, tostring(level), tostring(message)))
+        f:close()
+    end
 end
 
 function activate()
@@ -62,7 +107,6 @@ function inject_subtitles(plain_lyrics, synced_lyrics, is_not_found)
         if synced_lyrics and synced_lyrics ~= "" then
             local lines = {}
             for line in string.gmatch(synced_lyrics, "(.-)\n") do
-                -- Clean up any stray carriage returns
                 line = string.gsub(line, "\r", "")
                 local m, sec, text = string.match(line, "%[(%d+)%:(%d+%.%d+)%]%s*(.*)")
                 if m and sec then
@@ -142,7 +186,6 @@ function fetch_lrclib(title_x, artist_x)
         if syn == "null" or syn == "" then syn = nil end
         if pln == "null" or pln == "" then pln = nil end
         
-        -- Strip out any stray carriage returns from the API response
         if syn then 
             syn = string.gsub(syn, "\\r", "")
             syn = string.gsub(syn, "\\n", "\n") 

@@ -3,6 +3,8 @@
 -- it under the terms of the GNU General Public License as published by
 -- the Free Software Foundation.
 
+local current_target_item = nil
+local last_fetched_item = nil
 local log_file_path = ""
 
 function descriptor()
@@ -60,7 +62,19 @@ function log_msg(level, message)
     end
 end
 
+function get_item_id(item)
+    if not item then return "" end
+    local s, uri = pcall(function() return item:uri() end)
+    if s and uri then return uri end
+    return tostring(item)
+end
+
 function activate()
+    init_logger()
+    if vlc.input then
+        local s, i = pcall(function() return vlc.input.item() end)
+        if s and i then current_target_item = get_item_id(i) end
+    end
     update_lyrics()
     return true
 end
@@ -68,6 +82,7 @@ end
 function close() deactivate() end
 
 function deactivate()
+    log_msg("INFO", "=== LyricSub Deactivated ===")
     vlc.deactivate()
     return true
 end
@@ -204,6 +219,10 @@ end
 
 function input_changed()
     collectgarbage()
+    if vlc.input then
+        local s, i = pcall(function() return vlc.input.item() end)
+        if s and i then current_target_item = get_item_id(i) end
+    end
     update_lyrics()
     collectgarbage()
     return true

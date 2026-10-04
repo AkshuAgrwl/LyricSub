@@ -110,7 +110,49 @@ function seconds_to_srt_time(seconds)
     return string.format("%02d:%02d:%02d,%03d", h, m, s, ms)
 end
 
-function inject_subtitles(plain_lyrics, synced_lyrics, fallback_msg)
+function get_temp_dir()
+    local platform = get_platform()
+    return (platform == "unix") and "/tmp" or (os.getenv("TEMP") or os.getenv("TMP") or "C:\\Temp")
+end
+
+function get_path_separator()
+    return get_platform() == "unix" and "/" or "\\"
+end
+
+function generate_hash(str)
+    if not str then
+        return "00000000"
+    end
+    local hash = 5381
+    for i = 1, #str do
+        hash = (hash * 33 + string.byte(str, i)) % 4294967296
+    end
+    return string.format("%08x", math.floor(hash))
+end
+
+function file_exists(path)
+    local f = io.open(path, "rb")
+    if f then
+        f:close()
+        return true
+    end
+    return false
+end
+
+function inject_file(path)
+    if vlc.input and vlc.input.add_subtitle then
+        local success, err = pcall(function()
+            vlc.input.add_subtitle(path, true)
+        end)
+        if success then
+            log_msg("INFO", "Injected subtitle successfully at: " .. path)
+        else
+            log_msg("ERROR", "Failed to inject subtitle: " .. tostring(err))
+        end
+    end
+end
+
+function create_and_inject_srt(path, plain_lyrics, synced_lyrics, fallback_msg)
     local item = nil
     if vlc.input then
         local s, i = pcall(function()
@@ -123,16 +165,15 @@ function inject_subtitles(plain_lyrics, synced_lyrics, fallback_msg)
     if not item and vlc.item then
         item = vlc.item
     end
-    if not item then
-        return
-    end
 
     local duration = 240
-    local s_dur, d = pcall(function()
-        return item:duration()
-    end)
-    if s_dur and type(d) == "number" and d > 0 then
-        duration = d
+    if item then
+        local s_dur, d = pcall(function()
+            return item:duration()
+        end)
+        if s_dur and type(d) == "number" and d > 0 then
+            duration = d
+        end
     end
 
     local srt_content = ""
@@ -187,28 +228,12 @@ function inject_subtitles(plain_lyrics, synced_lyrics, fallback_msg)
         end
     end
 
-    math.randomseed(os.time())
-    local rnd = math.random(10000, 99999)
-    local platform = get_platform()
-    local path = (platform == "unix") and ("/tmp/lyricsub_" .. rnd .. ".srt") or
-                     ((os.getenv("TEMP") or os.getenv("TMP") or "C:\\Temp") .. "\\lyricsub_" .. rnd .. ".srt")
-
     local f = io.open(path, "wb")
     if f then
         f:write("\239\187\191")
         f:write(srt_content)
         f:close()
-
-        if vlc.input and vlc.input.add_subtitle then
-            local success, err = pcall(function()
-                vlc.input.add_subtitle(path, true)
-            end)
-            if success then
-                log_msg("INFO", "Injected subtitle successfully at: " .. path)
-            else
-                log_msg("ERROR", "Failed to inject subtitle: " .. tostring(err))
-            end
-        end
+        inject_file(path)
     else
         log_msg("ERROR", "Could not write temp subtitle file to: " .. path)
     end
@@ -371,14 +396,30 @@ function update_lyrics()
     local songartist = get_artist()
 
     if not songtitle or songtitle == "" or not songartist or songartist == "" then
-        log_msg("WARN",
-            "Missing metadata. Title: '" .. tostring(songtitle) .. "', Artist: '" .. tostring(songartist) .. "'")
+        log_msg("WARN", "Missing metadata. Cannot fetch or cache.")
         return false
+    end
+
+    local temp_dir = get_temp_dir()
+    local sep = get_path_separator()
+    local cache_key = generate_hash(songartist .. "|" .. songtitle)
+    local cache_path = temp_dir .. sep .. "lyricsub_" .. cache_key .. ".srt"
+
+    if file_exists(cache_path) then
+        log_msg("INFO", "Found cached lyrics for " .. songartist .. " - " .. songtitle .. " (" .. cache_key ..
+            "). Bypassing LRCLIB.")
+        inject_file(cache_path)
+        last_fetched_item = start_item_str
+        return true
     end
 
     log_msg("INFO", "Fetching lyrics for: " .. songartist .. " - " .. songtitle)
 
     local err_code, plain_lrc, synced_lrc = fetch_lrclib(songtitle, songartist)
+
+    if err_code == "aborted" then
+        return false
+    end
 
     local post_item = nil
     if vlc.input then
@@ -396,19 +437,30 @@ function update_lyrics()
     end
 
     if err_code == "network" or err_code == "error" then
-        log_msg("ERROR", "Network error. Cannot reach LRCLIB.")
-        inject_subtitles(nil, nil, "Network connection error")
+        log_msg("ERROR", "Network error. Reusing static error subtitle.")
+        local net_err_key = generate_hash("error_network")
+        local err_path = temp_dir .. sep .. "lyricsub_" .. net_err_key .. ".srt"
+        if file_exists(err_path) then
+            inject_file(err_path)
+        else
+            create_and_inject_srt(err_path, nil, nil, "Network connection error")
+        end
     elseif err_code == "not_found" or not plain_lrc or plain_lrc == "" then
-        log_msg("INFO", "Lyrics not found on LRCLIB. Showing fallback.")
-        inject_subtitles(nil, nil, "Lyrics not found")
+        log_msg("INFO", "Lyrics not found on LRCLIB. Reusing static not-found subtitle.")
+        local nf_err_key = generate_hash("error_notfound")
+        local err_path = temp_dir .. sep .. "lyricsub_" .. nf_err_key .. ".srt"
+        if file_exists(err_path) then
+            inject_file(err_path)
+        else
+            create_and_inject_srt(err_path, nil, nil, "Lyrics not found")
+        end
     else
-        log_msg("INFO", "Lyrics found successfully.")
+        log_msg("INFO", "Lyrics found successfully. Saving to local cache (" .. cache_key .. ").")
         local formatted_plain = string.gsub(plain_lrc, "\n", "<br>")
-        inject_subtitles(formatted_plain, synced_lrc, false)
+        create_and_inject_srt(cache_path, formatted_plain, synced_lrc, false)
     end
 
     last_fetched_item = start_item_str
-
     return true
 end
 
